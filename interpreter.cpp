@@ -6,6 +6,7 @@
 #include <cctype>
 #include <memory>
 
+// Token types for new statements
 enum TokenType {
     NUMBER,
     IDENTIFIER,
@@ -16,16 +17,14 @@ enum TokenType {
     DIVIDE,
     PRINT,
     INPUT,
-    WHILE,
     IF,
     ELSE,
+    MOD,
     LEFT_PAREN,
     RIGHT_PAREN,
-    LESS_THAN,
-    GREATER_THAN,
-    EQUAL,
-    NOT_EQUAL,
     END,
+    RUN,
+    EQUAL,
     INVALID
 };
 
@@ -56,19 +55,18 @@ public:
                     case '-': tokens.push_back({MINUS, "-"}); position++; break;
                     case '*': tokens.push_back({MULTIPLY, "*"}); position++; break;
                     case '/': tokens.push_back({DIVIDE, "/"}); position++; break;
-                    case '=': 
-                        if (source[position + 1] == '=') {
-                            tokens.push_back({EQUAL, "=="}); 
-                            position += 2; 
+                    case '=':
+                        if (position + 1 < source.size() && source[position + 1] == '=') {
+                            tokens.push_back({EQUAL, "=="});
+                            position += 2; // Skip the next '='
                         } else {
-                            tokens.push_back({ASSIGN, "="}); 
+                            tokens.push_back({ASSIGN, "="});
                             position++;
                         }
                         break;
-                    case '<': tokens.push_back({LESS_THAN, "<"}); position++; break;
-                    case '>': tokens.push_back({GREATER_THAN, ">"}); position++; break;
                     case '(': tokens.push_back({LEFT_PAREN, "("}); position++; break;
                     case ')': tokens.push_back({RIGHT_PAREN, ")"}); position++; break;
+                    case '%': tokens.push_back({MOD, "%"}); position++; break;
                     default: tokens.push_back({INVALID, std::string(1, current)}); position++; break;
                 }
             }
@@ -95,12 +93,14 @@ private:
             return {PRINT, identifier};
         } else if (identifier == "INPUT") {
             return {INPUT, identifier};
-        } else if (identifier == "WHILE") {
-            return {WHILE, identifier};
         } else if (identifier == "IF") {
             return {IF, identifier};
         } else if (identifier == "ELSE") {
             return {ELSE, identifier};
+        } else if (identifier == "END") {
+            return {END, identifier};
+        } else if (identifier == "RUN") {
+            return {RUN, identifier};
         }
         return {IDENTIFIER, identifier};
     }
@@ -108,6 +108,8 @@ private:
     std::string source;
     size_t position;
 };
+
+// Abstract Syntax Tree nodes
 struct ASTNode {
     virtual ~ASTNode() = default;
     virtual int evaluate(std::unordered_map<std::string, int>& variables) = 0;
@@ -138,14 +140,11 @@ struct BinaryOpNode : public ASTNode {
         int leftVal = left->evaluate(variables);
         int rightVal = right->evaluate(variables);
         switch (op) {
+            case MOD: return leftVal % rightVal;
             case PLUS: return leftVal + rightVal;
             case MINUS: return leftVal - rightVal;
             case MULTIPLY: return leftVal * rightVal;
             case DIVIDE: return leftVal / rightVal;
-            case LESS_THAN: return leftVal < rightVal;
-            case GREATER_THAN: return leftVal > rightVal;
-            case EQUAL: return leftVal == rightVal;
-            case NOT_EQUAL: return leftVal != rightVal;
             default: return 0;
         }
     }
@@ -187,33 +186,20 @@ struct InputNode : public ASTNode {
 
 struct IfElseNode : public ASTNode {
     std::unique_ptr<ASTNode> condition;
-    std::unique_ptr<ASTNode> ifBody;
-    std::unique_ptr<ASTNode> elseBody;
-    IfElseNode(std::unique_ptr<ASTNode> condition, std::unique_ptr<ASTNode> ifBody, std::unique_ptr<ASTNode> elseBody)
-        : condition(std::move(condition)), ifBody(std::move(ifBody)), elseBody(std::move(elseBody)) {}
+    std::unique_ptr<ASTNode> thenBranch;
+    std::unique_ptr<ASTNode> elseBranch;
+    IfElseNode(std::unique_ptr<ASTNode> condition, std::unique_ptr<ASTNode> thenBranch, std::unique_ptr<ASTNode> elseBranch)
+        : condition(std::move(condition)), thenBranch(std::move(thenBranch)), elseBranch(std::move(elseBranch)) {}
     int evaluate(std::unordered_map<std::string, int>& variables) override {
         if (condition->evaluate(variables)) {
-            return ifBody->evaluate(variables);
-        } else if (elseBody) {
-            return elseBody->evaluate(variables);
+            return thenBranch->evaluate(variables);
+        } else if (elseBranch) {
+            return elseBranch->evaluate(variables);
         }
         return 0;
     }
 };
 
-struct WhileNode : public ASTNode {
-    std::unique_ptr<ASTNode> condition;
-    std::unique_ptr<ASTNode> body;
-    WhileNode(std::unique_ptr<ASTNode> condition, std::unique_ptr<ASTNode> body)
-        : condition(std::move(condition)), body(std::move(body)) {}
-    int evaluate(std::unordered_map<std::string, int>& variables) override {
-        int result = 0;
-        while (condition->evaluate(variables)) {
-            result = body->evaluate(variables);
-        }
-        return result;
-    }
-};
 class Parser {
 public:
     explicit Parser(const std::vector<Token>& tokens) : tokens(tokens), position(0) {}
@@ -235,21 +221,19 @@ private:
                 position++;
                 return std::make_unique<InputNode>(varName);
             }
-        } else if (tokens[position].type == WHILE) {
-            position++;
-            auto condition = parseExpression();
-            auto body = parseStatement();
-            return std::make_unique<WhileNode>(std::move(condition), std::move(body));
         } else if (tokens[position].type == IF) {
             position++;
             auto condition = parseExpression();
-            auto ifBody = parseStatement();
-            std::unique_ptr<ASTNode> elseBody;
-            if (tokens[position].type == ELSE) {
+            if (tokens[position].type == LEFT_PAREN) {
                 position++;
-                elseBody = parseStatement();
+                auto thenBranch = parseStatement();
+                std::unique_ptr<ASTNode> elseBranch = nullptr;
+                if (tokens[position].type == ELSE) {
+                    position++;
+                    elseBranch = parseStatement();
+                }
+                return std::make_unique<IfElseNode>(std::move(condition), std::move(thenBranch), std::move(elseBranch));
             }
-            return std::make_unique<IfElseNode>(std::move(condition), std::move(ifBody), std::move(elseBody));
         } else if (tokens[position].type == IDENTIFIER) {
             std::string varName = tokens[position].value;
             position++;
@@ -264,9 +248,7 @@ private:
 
     std::unique_ptr<ASTNode> parseExpression() {
         auto left = parseTerm();
-        while (position < tokens.size() && (tokens[position].type == PLUS || tokens[position].type == MINUS ||
-                                             tokens[position].type == LESS_THAN || tokens[position].type == GREATER_THAN ||
-                                             tokens[position].type == EQUAL || tokens[position].type == NOT_EQUAL)) {
+        while (position < tokens.size() && (tokens[position].type == PLUS || tokens[position].type == MINUS)) {
             TokenType op = tokens[position].type;
             position++;
             auto right = parseTerm();
@@ -277,7 +259,7 @@ private:
 
     std::unique_ptr<ASTNode> parseTerm() {
         auto left = parseFactor();
-        while (position < tokens.size() && (tokens[position].type == MULTIPLY || tokens[position].type == DIVIDE)) {
+        while (position < tokens.size() && (tokens[position].type == MULTIPLY || tokens[position].type == DIVIDE || tokens[position].type == MOD)) {
             TokenType op = tokens[position].type;
             position++;
             auto right = parseFactor();
@@ -299,8 +281,11 @@ private:
             auto expr = parseExpression();
             if (tokens[position].type == RIGHT_PAREN) {
                 position++;
+                return expr;
             }
-            return expr;
+        } else if (current.type == EQUAL) {
+            position++;
+            return nullptr; // Handle comparison separately in condition parsing
         }
         return nullptr;
     }
@@ -308,26 +293,38 @@ private:
     const std::vector<Token>& tokens;
     size_t position;
 };
+
 int main() {
     std::unordered_map<std::string, int> variables;
+    std::vector<std::string> lines;
     std::string input;
+    std::cout << "BASIC Interpreter\nEnter END to finish input and RUN to execute.\n";
 
-    std::cout << "BASIC Interpreter\nEnter exit to quit.\n";
     while (true) {
-        std::cout << "> ";
         std::getline(std::cin, input);
-        if (input == "EXIT") break;
+        if (input == "END") {
+            break;
+        }
+        lines.push_back(input);
+    }
 
-        Tokenizer tokenizer(input);
-        std::vector<Token> tokens = tokenizer.tokenize();
+    std::cout << "Program input finished. Type RUN to execute.\n";
 
-        Parser parser(tokens);
-        std::unique_ptr<ASTNode> ast = parser.parse();
-        if (ast) {
-            ast->evaluate(variables);
-        } else {
-            std::cout << "Syntax error!" << std::endl;
+    std::getline(std::cin, input);
+    if (input == "RUN") {
+        for (const auto& line : lines) {
+            Tokenizer tokenizer(line);
+            std::vector<Token> tokens = tokenizer.tokenize();
+
+            Parser parser(tokens);
+            std::unique_ptr<ASTNode> ast = parser.parse();
+            if (ast) {
+                ast->evaluate(variables);
+            } else {
+                std::cout << "Syntax error!" << std::endl;
+            }
         }
     }
+
     return 0;
 }
